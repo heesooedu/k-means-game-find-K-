@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>군집 탐험 게임</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body { font-family: 'Malgun Gothic', sans-serif; text-align: center; background-color: #f8f9fa; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        .header { display: flex; justify-content: space-between; margin-bottom: 20px; font-size: 18px; font-weight: bold; color: #555; border-bottom: 2px solid #eee; padding-bottom: 10px;}
+        input[type="text"] { padding: 10px; font-size: 16px; width: 200px; border: 1px solid #ccc; border-radius: 5px; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; background-color: #007bff; color: white; border: none; border-radius: 5px; margin: 5px; }
+        .btn-k { background-color: #28a745; font-size: 18px; font-weight: bold; width: 80px; }
+        #plotDiv { width: 100%; height: 550px; margin: 20px 0; border: 1px solid #eee; }
+        #timerText { color: red; font-size: 24px; font-weight: bold; margin: 10px 0; }
+        .chart-row { display: flex; justify-content: space-between; gap: 15px; width: 100%; margin-bottom: 15px; }
+        .chart-half { width: 49%; height: 450px; border: 1px solid #ddd; border-radius: 8px; }
+        .chart-full { width: 100%; height: 350px; border: 1px solid #ddd; border-radius: 8px; }
+        .dashboard { margin-top: 20px; display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+        .dash-card { background: #f1f3f5; padding: 8px 12px; border-radius: 8px; font-weight: bold; border: 1px solid #ddd; }
+        .notice { font-size: 14px; color: #666; font-style: italic; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="loginArea">
+            <h2>K-Means 군집 분석 게임</h2>
+            <input type="text" id="nicknameInput" maxlength="10" placeholder="닉네임 (최대 10자)">
+            <button onclick="joinGame()">입장하기</button>
+        </div>
+
+        <div id="mainArea" style="display: none;">
+            <div class="header">
+                <span id="roundDisp">라운드: 1 / 8</span>
+                <span id="nameDisp"></span>
+            </div>
+
+            <div id="teacherControls" style="display: none; margin-bottom: 20px;">
+                <button id="btnStart" onclick="startRound()" style="background-color: #dc3545;">라운드 시작</button>
+                <button id="btnNext" onclick="nextRound()" style="display: none;">다음 라운드로</button>
+            </div>
+
+            <div id="waitingMsg" style="font-size: 18px; margin: 40px 0;">교사가 라운드를 시작할 때까지 대기함.</div>
+
+            <div id="gameUI" style="display: none;">
+                <div id="timerText">제출 마감: <span id="timerSpan">10</span>초</div>
+                <div id="plotDiv"></div>
+                <div id="kButtons">
+                    <button class="btn-k" onclick="submitK(2)">2개</button>
+                    <button class="btn-k" onclick="submitK(3)">3개</button>
+                    <button class="btn-k" onclick="submitK(4)">4개</button>
+                    <button class="btn-k" onclick="submitK(5)">5개</button>
+                    <button class="btn-k" onclick="submitK(6)">6개</button>
+                    <button class="btn-k" onclick="submitK(7)">7개</button>
+                </div>
+            </div>
+
+            <div id="resultUI" style="display: none;">
+                <h2 id="resultTitle">Elbow-method에 따른 최적의 K값: <span id="elbowVal" style="color:blue;"></span></h2>
+                <p class="notice">참고: 수학적 최적값은 인간의 시각적 직관과 다를 수 있음.</p>
+                <div class="chart-row">
+                    <div id="resultOrigDiv" class="chart-half"></div>
+                    <div id="resultClusteredDiv" class="chart-half"></div>
+                </div>
+                <div id="resultElbowDiv" class="chart-full"></div>
+                <h3 style="margin-top: 20px;">학생 제출 현황</h3>
+                <div class="dashboard" id="dashboardDiv"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let myName = '', timerInterval, currentData = [], is3D = false;
+
+        function getDistance(p1, p2, is3d) {
+            let s = Math.pow(p1.x-p2.x, 2) + Math.pow(p1.y-p2.y, 2);
+            if (is3d) s += Math.pow(p1.z-p2.z, 2);
+            return Math.sqrt(s);
+        }
+
+        // [정교화된 로직] 기울기 변화율 기반 Elbow 판별
+        function findElbow(wcssValues) {
+            let bestK = 2, maxScore = -Infinity;
+            const minW = Math.min(...wcssValues), maxW = Math.max(...wcssValues);
+            const normW = wcssValues.map(w => (w - minW) / (maxW - minW));
+
+            for (let i = 1; i < 7; i++) {
+                let slope1 = normW[i - 1] - normW[i];
+                let slope2 = normW[i] - normW[i + 1];
+                if (slope2 <= 0) slope2 = 0.0001;
+                let score = (slope1 / slope2) * slope1; // 비율과 하락폭 가중치 결합
+                if (score > maxScore) { maxScore = score; bestK = i + 1; }
+            }
+            return bestK;
+        }
+
+        function runKMeans(data, k, is3d) {
+            if (k === 1) {
+                let cx=0, cy=0, cz=0;
+                data.forEach(p => { cx+=p.x; cy+=p.y; if(is3d) cz+=p.z; });
+                cx/=data.length; cy/=data.length; if(is3d) cz/=data.length;
+                let wcss = 0;
+                data.forEach(p => wcss += getDistance(p, {x:cx,y:cy,z:cz}, is3d)**2);
+                return { wcss: wcss, clusters: new Array(data.length).fill(0) };
+            }
+            let centroids = [];
+            for (let i=0; i<k; i++) centroids.push({...data[Math.floor(Math.random() * data.length)]});
+            let clusters = new Array(data.length).fill(0), changed = true, iters = 0;
+            while (changed && iters < 25) {
+                changed = false; iters++;
+                data.forEach((p, idx) => {
+                    let minD = Infinity, best = 0;
+                    centroids.forEach((c, ci) => {
+                        let d = getDistance(p, c, is3d);
+                        if(d < minD) { minD = d; best = ci; }
+                    });
+                    if(clusters[idx] !== best) { clusters[idx] = best; changed = true; }
+                });
+                let sums = Array(k).fill(null).map(()=>({x:0, y:0, z:0, c:0}));
+                data.forEach((p, idx) => { let cl=clusters[idx]; sums[cl].x+=p.x; sums[cl].y+=p.y; if(is3d) sums[cl].z+=p.z; sums[cl].c++; });
+                centroids.forEach((c, i) => { if(sums[i].c > 0) { c.x=sums[i].x/sums[i].c; c.y=sums[i].y/sums[i].c; if(is3d) c.z=sums[i].z/sums[i].c; }});
+            }
+            let totalW = 0;
+            data.forEach((p, idx) => totalW += getDistance(p, centroids[clusters[idx]], is3d)**2);
+            return { wcss: totalW, clusters: clusters };
+        }
+
+        function createTrace(data, is3d, colors = null) {
+            let t = { x: data.map(d=>d.x), y: data.map(d=>d.y), mode: 'markers', marker: { size: 5, color: colors || '#555', colorscale: 'Jet' }, showlegend: false };
+            if (is3d) { t.type = 'scatter3d'; t.z = data.map(d=>d.z); }
+            return t;
+        }
+
+        function joinGame() { socket.emit('join', {nickname: document.getElementById('nicknameInput').value}); }
+
+        socket.on('join_success', (d) => {
+            myName = d.nickname;
+            document.getElementById('loginArea').style.display = 'none';
+            document.getElementById('mainArea').style.display = 'block';
+            document.getElementById('nameDisp').innerText = `접속자: ${myName}`;
+            if (myName === 'teacher') {
+                document.getElementById('teacherControls').style.display = 'block';
+                document.getElementById('kButtons').style.display = 'none';
+            }
+        });
+
+        socket.on('round_started', (d) => {
+            currentData = d.data; is3D = d.round >= 5;
+            document.getElementById('roundDisp').innerText = `라운드: ${d.round} / 8 (${is3D?'3D':'2D'})`;
+            document.getElementById('waitingMsg').style.display = 'none';
+            document.getElementById('resultUI').style.display = 'none';
+            document.getElementById('gameUI').style.display = 'block';
+            if(myName === 'teacher') document.getElementById('btnStart').style.display = 'none';
+            document.querySelectorAll('.btn-k').forEach(b => { b.disabled = false; b.style.backgroundColor = '#28a745'; });
+            
+            Plotly.newPlot('plotDiv', [createTrace(currentData, is3D)], {margin:{t:0,b:0,l:0,r:0}});
+            let tLeft = 10; document.getElementById('timerSpan').innerText = tLeft;
+            clearInterval(timerInterval);
+            timerInterval = setInterval(() => { tLeft--; document.getElementById('timerSpan').innerText = tLeft; if(tLeft<=0) clearInterval(timerInterval); }, 1000);
+        });
+
+        socket.on('round_ended', (d) => {
+            clearInterval(timerInterval);
+            document.getElementById('gameUI').style.display = 'none';
+            document.getElementById('resultUI').style.display = 'block';
+            if(myName === 'teacher') document.getElementById('btnNext').style.display = 'inline-block';
+
+            let wVals = [], kVals = [1,2,3,4,5,6,7,8], results = {};
+            kVals.forEach(k => { let r = runKMeans(currentData, k, is3D); wVals.push(r.wcss); results[k] = r.clusters; });
+            let eK = findElbow(wVals);
+            document.getElementById('elbowVal').innerText = eK + "개";
+
+            Plotly.newPlot('resultOrigDiv', [createTrace(currentData, is3D)], {title: '원본 데이터', margin:{t:40,b:20,l:20,r:20}});
+            Plotly.newPlot('resultClusteredDiv', [createTrace(currentData, is3D, results[eK])], {title: `군집화 (K=${eK})`, margin:{t:40,b:20,l:20,r:20}});
+            
+            let eTrace = { x: kVals, y: wVals, mode: 'lines+markers', line:{color:'#007bff', width:3} };
+            let sTrace = { x:[eK], y:[wVals[eK-1]], mode:'markers', marker:{size:14, color:'red', symbol:'star'} };
+            Plotly.newPlot('resultElbowDiv', [eTrace, sTrace], {title: 'Elbow Method 그래프', showlegend:false, margin:{t:40,b:40,l:60,r:40}});
+
+            const dash = document.getElementById('dashboardDiv'); dash.innerHTML = '';
+            for(const [n, g] of Object.entries(d.submissions)) dash.innerHTML += `<div class="dash-card">${n}: <span style="color:red;">${g}개</span></div>`;
+        });
+
+        socket.on('prepare_next', (d) => {
+            document.getElementById('resultUI').style.display = 'none';
+            document.getElementById('waitingMsg').style.display = 'block';
+            if(myName === 'teacher') { document.getElementById('btnNext').style.display = 'none'; document.getElementById('btnStart').style.display = 'inline-block'; }
+        });
+
+        function submitK(k) {
+            socket.emit('submit_guess', {guess: k});
+            document.querySelectorAll('.btn-k').forEach(b => b.disabled = true);
+            event.target.style.backgroundColor = '#17a2b8';
+        }
+
+        function startRound() { socket.emit('start_round'); }
+        function nextRound() { socket.emit('next_round'); }
+    </script>
+</body>
+</html>

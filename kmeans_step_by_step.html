@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>K-Means Clustering 체험 (교육용)</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; margin-top: 20px; }
+        canvas { border: 1px solid #ccc; cursor: crosshair; margin: 20px 0; background-color: #f9f9f9; }
+        .controls { margin-top: 15px; }
+        button { padding: 10px 15px; margin: 0 5px; cursor: pointer; font-size: 14px; }
+        input[type="number"] { width: 50px; font-size: 14px; padding: 5px; }
+        #status { font-weight: bold; margin-top: 10px; color: #333; }
+    </style>
+</head>
+<body>
+
+    <h2>K-Means 알고리즘 동작 체험</h2>
+    <p>데이터의 분포를 보고 적절한 군집 수(k)를 설정한 뒤, 단계별로 실행해보세요.</p>
+    
+    <div class="controls">
+        <label>군집 수 (k): <input type="number" id="kInput" value="3" min="1" max="7"></label>
+        <button onclick="generateRandomData()">군집 데이터 생성</button>
+        <button onclick="clearAll()">데이터 모두 지우기</button>
+    </div>
+
+    <canvas id="canvas" width="700" height="400"></canvas>
+
+    <div class="controls">
+        <button onclick="initCentroids()">1단계: 중심점 무작위 배치</button>
+        <button onclick="assignPoints()">2단계: 가까운 군집 할당</button>
+        <button onclick="updateCentroids()">3단계: 중심점(평균) 이동</button>
+    </div>
+    <p id="status">상태: 대기 중</p>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        let points = [];
+        let centroids = [];
+        const colors = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0'];
+
+        canvas.addEventListener('click', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            points.push({ x: e.clientX - rect.left, y: e.clientY - rect.top, cluster: -1 });
+            draw();
+        });
+
+        // 수정된 부분: 2~5개의 무작위 군집 수 생성
+        function generateRandomData() {
+            points = []; 
+            centroids = []; 
+            
+            // 2개에서 5개 사이의 랜덤한 군집 개수 결정
+            const numClusters = Math.floor(Math.random() * 4) + 2; 
+            const trueCenters = [];
+            
+            // 캔버스 내부에 랜덤하게 군집의 진짜 중심 위치 설정 (가장자리 여백 확보)
+            for(let i=0; i<numClusters; i++) {
+                trueCenters.push({
+                    x: Math.random() * (canvas.width - 100) + 50,
+                    y: Math.random() * (canvas.height - 100) + 50
+                });
+            }
+
+            // 약 45~50개의 데이터를 군집 수에 맞춰 분배
+            const pointsPerCenter = Math.floor(45 / numClusters); 
+            const spread = 50; // 퍼짐 정도
+
+            trueCenters.forEach(center => {
+                for (let i = 0; i < pointsPerCenter; i++) {
+                    points.push({
+                        x: center.x + (Math.random() - 0.5) * spread * 2,
+                        y: center.y + (Math.random() - 0.5) * spread * 2,
+                        cluster: -1
+                    });
+                }
+            });
+
+            // 전체적인 무작위 노이즈 데이터 추가
+            for (let i = 0; i < 5; i++) {
+                 points.push({ x: Math.random() * canvas.width, y: Math.random() * canvas.height, cluster: -1 });
+            }
+
+            document.getElementById('status').innerText = "상태: 새로운 군집 데이터가 생성되었습니다. 눈으로 보고 k값을 추정해보세요.";
+            draw();
+        }
+
+        function clearAll() {
+            points = [];
+            centroids = [];
+            document.getElementById('status').innerText = "상태: 데이터 초기화됨";
+            draw();
+        }
+
+        function initCentroids() {
+            if(points.length === 0) { alert("데이터를 먼저 추가해주세요."); return; }
+            const k = parseInt(document.getElementById('kInput').value);
+            centroids = [];
+            for(let i=0; i<k; i++) {
+                centroids.push({
+                    x: Math.random() * canvas.width,
+                    y: Math.random() * canvas.height,
+                    id: i
+                });
+            }
+            points.forEach(p => p.cluster = -1);
+            document.getElementById('status').innerText = "상태: 1단계 - 초기 중심점 무작위 배치 완료";
+            draw();
+        }
+
+        function assignPoints() {
+            if(centroids.length === 0) { alert("1단계를 먼저 실행하세요."); return; }
+            let changed = false;
+            points.forEach(p => {
+                let minDist = Infinity;
+                let nearest = -1;
+                centroids.forEach(c => {
+                    let dist = Math.hypot(p.x - c.x, p.y - c.y);
+                    if(dist < minDist) { minDist = dist; nearest = c.id; }
+                });
+                if(p.cluster !== nearest) changed = true;
+                p.cluster = nearest;
+            });
+            document.getElementById('status').innerText = changed ? "상태: 2단계 - 가장 가까운 중심점 기준 할당 완료" : "상태: 수렴 완료 (더 이상 군집이 변하지 않습니다)";
+            draw();
+        }
+
+        function updateCentroids() {
+            if(centroids.length === 0) { return; }
+            const k = centroids.length;
+            let sums = Array.from({length: k}, () => ({x: 0, y: 0, count: 0}));
+            
+            points.forEach(p => {
+                if(p.cluster !== -1) {
+                    sums[p.cluster].x += p.x;
+                    sums[p.cluster].y += p.y;
+                    sums[p.cluster].count++;
+                }
+            });
+
+            centroids.forEach(c => {
+                if(sums[c.id].count > 0) {
+                    c.x = sums[c.id].x / sums[c.id].count;
+                    c.y = sums[c.id].y / sums[c.id].count;
+                }
+            });
+            document.getElementById('status').innerText = "상태: 3단계 - 새로운 평균 좌표로 중심점 이동 완료. 다시 2단계를 누르세요.";
+            draw();
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            points.forEach(p => {
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+                ctx.fillStyle = p.cluster === -1 ? '#888' : colors[p.cluster % colors.length];
+                ctx.fill();
+                ctx.closePath();
+            });
+
+            centroids.forEach(c => {
+                ctx.beginPath();
+                ctx.moveTo(c.x, c.y - 12);
+                ctx.lineTo(c.x - 12, c.y + 10);
+                ctx.lineTo(c.x + 12, c.y + 10);
+                ctx.closePath();
+                ctx.fillStyle = colors[c.id % colors.length];
+                ctx.fill();
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = '#000';
+                ctx.stroke();
+            });
+        }
+    </script>
+</body>
+</html>
