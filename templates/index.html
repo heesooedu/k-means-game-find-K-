@@ -96,6 +96,8 @@
             return bestK;
         }
 
+
+// [수정됨] K-Means 알고리즘 (10회 반복 후 최적값 선택 로직 추가)
         function runKMeans(data, k, is3d) {
             if (k === 1) {
                 let cx=0, cy=0, cz=0;
@@ -105,27 +107,52 @@
                 data.forEach(p => wcss += getDistance(p, {x:cx,y:cy,z:cz}, is3d)**2);
                 return { wcss: wcss, clusters: new Array(data.length).fill(0) };
             }
-            let centroids = [];
-            for (let i=0; i<k; i++) centroids.push({...data[Math.floor(Math.random() * data.length)]});
-            let clusters = new Array(data.length).fill(0), changed = true, iters = 0;
-            while (changed && iters < 25) {
-                changed = false; iters++;
-                data.forEach((p, idx) => {
-                    let minD = Infinity, best = 0;
-                    centroids.forEach((c, ci) => {
-                        let d = getDistance(p, c, is3d);
-                        if(d < minD) { minD = d; best = ci; }
+
+            let bestWCSS = Infinity;
+            let bestClusters = [];
+
+            // 지역 최적점(Local Minimum)에 빠지는 것을 막기 위해
+            // 무작위 초기화 알고리즘을 10번 반복 실행하여 가장 좋은 결과를 찾음 (Multi-start)
+            for (let attempt = 0; attempt < 10; attempt++) {
+                let centroids = [];
+                let tempIdx = [];
+                // 중심점 초기 위치가 중복되지 않도록 방어 로직 추가
+                while(tempIdx.length < k) {
+                    let r = Math.floor(Math.random() * data.length);
+                    if(!tempIdx.includes(r)) tempIdx.push(r);
+                }
+                for (let i=0; i<k; i++) centroids.push({...data[tempIdx[i]]});
+                
+                let clusters = new Array(data.length).fill(0), changed = true, iters = 0;
+                while (changed && iters < 30) {
+                    changed = false; iters++;
+                    data.forEach((p, idx) => {
+                        let minD = Infinity, best = 0;
+                        centroids.forEach((c, ci) => {
+                            let d = getDistance(p, c, is3d);
+                            if(d < minD) { minD = d; best = ci; }
+                        });
+                        if(clusters[idx] !== best) { clusters[idx] = best; changed = true; }
                     });
-                    if(clusters[idx] !== best) { clusters[idx] = best; changed = true; }
-                });
-                let sums = Array(k).fill(null).map(()=>({x:0, y:0, z:0, c:0}));
-                data.forEach((p, idx) => { let cl=clusters[idx]; sums[cl].x+=p.x; sums[cl].y+=p.y; if(is3d) sums[cl].z+=p.z; sums[cl].c++; });
-                centroids.forEach((c, i) => { if(sums[i].c > 0) { c.x=sums[i].x/sums[i].c; c.y=sums[i].y/sums[i].c; if(is3d) c.z=sums[i].z/sums[i].c; }});
+                    let sums = Array(k).fill(null).map(()=>({x:0, y:0, z:0, c:0}));
+                    data.forEach((p, idx) => { let cl=clusters[idx]; sums[cl].x+=p.x; sums[cl].y+=p.y; if(is3d) sums[cl].z+=p.z; sums[cl].c++; });
+                    centroids.forEach((c, i) => { if(sums[i].c > 0) { c.x=sums[i].x/sums[i].c; c.y=sums[i].y/sums[i].c; if(is3d) c.z=sums[i].z/sums[i].c; }});
+                }
+                
+                let totalW = 0;
+                data.forEach((p, idx) => totalW += getDistance(p, centroids[clusters[idx]], is3d)**2);
+                
+                // 이번 시도(attempt)의 결과가 이전보다 좋다면 갱신
+                if (totalW < bestWCSS) {
+                    bestWCSS = totalW;
+                    bestClusters = [...clusters];
+                }
             }
-            let totalW = 0;
-            data.forEach((p, idx) => totalW += getDistance(p, centroids[clusters[idx]], is3d)**2);
-            return { wcss: totalW, clusters: clusters };
+            return { wcss: bestWCSS, clusters: bestClusters };
         }
+
+
+
 
         function createTrace(data, is3d, colors = null) {
             let t = { x: data.map(d=>d.x), y: data.map(d=>d.y), mode: 'markers', marker: { size: 5, color: colors || '#555', colorscale: 'Jet' }, showlegend: false };
